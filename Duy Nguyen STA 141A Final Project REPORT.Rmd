@@ -1,0 +1,677 @@
+---
+title: "STA 141A Final Project Report"
+author: "Duy Nguyen (ID Removed)"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+knitr::opts_chunk$set(warning = FALSE)
+knitr::opts_chunk$set(tidy = TRUE)
+library(ggplot2)
+theme_set(theme_classic() + theme(legend.position = "top"))
+setwd('/Users/dnguyen/Desktop/Classes/STA141A')
+session=list()
+for(i in 1:18){
+  session[[i]]=readRDS(paste('./Data/session', i, '.rds', sep=''))
+  print(session[[i]]$mouse_name)
+  print(session[[i]]$date_exp)
+}
+library(tidyverse)
+library(dplyr)
+library(knitr)
+
+test_set_1 = readRDS('test/test1.rds')
+test_set_18 = readRDS('test/test2.rds')
+```
+
+# Abstract
+
+This project will utilize 18 sessions from a data set from Steinmetz et al. (2019) about experiments on 10 different mice and attempt to create a model to predict success or failure in each of the trials in the experiment. It will explore the sessions, account for the differences and similarities. It will combine all the data into a new set that will be used in a predictive model. This project will try to simplify the complicated data set in an attempt to create said predictive model and see its performance due to this simplification. However, there will be 3 models created to use on the test data set on conditions about the stimuli in the trials.
+
+# Introduction
+
+In this project, I will attempt to utilize the data set about the experiments on mice to create a prediction model on the next outcome. I will explore the data set to point out the differences in the sessions, and justify my reason to utilizing the benchmark model. I will then point out the differences in contrasts in each trial as well as what happens on a specific condition and then split the data set in accordance to each type of differences. Then, I will create predictive models in the form of logistic regression and find the most optimal criterion for each model's prediction probability to be a predicted success or failure. Finally, I will apply the test data sets and evaluate their performances. This all done to ultimately answer the question: Can I predict the outcome of the next observation based off of the spike activity while also being able to simplify this complicated data as much as I could? After that will be my discussion on what I could improve and what my thoughts are about this project.
+
+# Exploratory Analysis
+
+We can summarize the entire data into a table with all the sessions to be able to make some observations on this data set. The following table was created off of an existing code from Professor Chen's code during a project consulting session and was slightly modified with one extra variable.
+
+```{r, cache = TRUE}
+n.session=length(session)
+
+# in library tidyverse
+dat <- tibble(
+  mouse_name = rep('name',n.session),
+  date_exp =rep('dt',n.session),
+  n_brain_area = rep(0,n.session),
+  n_neurons = rep(0,n.session),
+  n_trials = rep(0,n.session),
+  contrast_diff_mean = rep(0, n.session),
+  success_rate = rep(0,n.session)
+)
+
+
+
+for(i in 1:n.session)
+  {
+  
+  tmp = session[[i]];
+  index = length(tmp$spks);
+  dat[i,1]=tmp$mouse_name;
+  dat[i,2]=tmp$date_exp;
+  dat[i,3]=length(unique(tmp$brain_area));
+  dat[i,4]=dim(tmp$spks[[1]])[1];
+  dat[i,5]=length(tmp$feedback_type);
+  dat[i,6]=mean(tmp$contrast_right-tmp$contrast_left)
+  dat[i,7]=mean(tmp$feedback_type+1)/2;
+  }
+
+arrange(dat, desc(success_rate)) %>% head() %>% kable()
+```
+
+This table provides the first 6 sessions in the data set that is sorted in ascending order based on the success rates. The purpose of this table is not to attempt to look at any trends or patterns that can contribute to a predictive model, but instead justify the reason I will take an approach later in this report. Looking at the number of different unique brain areas, which is the `n_neurons`it's already noticeable that the number of unique brain areas are different across sessions. This table does not account the names of each unique brain area, but considering that there numbers are different, I can also tell that the different brain area names would also have to be different. Additionally, the number of neurons, which corresponds to `n_neurons` is different across all sessions as well as their trials in `n_trials`. Because of this, I believe that one session could heavily influence the prediction model's performance because of its higher amount of neurons, as well as due to the unequal trials across all sessions. I thought that one way to be able to work around that, is to take the means of the spike activity in each neuron instead. Another variable I wanted to take a look at later is the two contrasts, which are the left and right contrasts. This was included in the table as means of the difference between the two in the variable name `contrast_diff_mean`. Values closer to 0 seems to associate with a lower success rate, which will help in my explanation for later sections.
+
+The following plot represents only one single session, namely session 10 because it's the middle ground of success rates.
+
+```{r}
+SPKEX = c()
+for (j in 1:447)
+{
+  out = sum(session[[10]]$spks[[j]]) / nrow(session[[10]]$spks[[1]])
+  SPKEX = append(SPKEX, out)
+}
+
+SPKEX = cbind(SPKEX, c(1:447)) 
+SPKEX = cbind(SPKEX, session[[10]]$feedback_type) %>% as.data.frame()
+
+colnames(SPKEX) = c("Spike_Total", "Trials", 'Feedback')
+```
+
+```{r}
+ggplot(data = SPKEX, aes(x = Trials, y = Spike_Total, color = as.factor(Feedback))) + geom_point(alpha = 1) + 
+  labs(x = "Trials", y = "Spike Means", title = "Spike Means Across Trials (Session 10)", color = "Feedback Type")
+
+rm(SPKEX)
+```
+
+For this plot, I noticed that the mean spikes with the positive feedback has a higher range compared to the negative feedback, as I am seeing at the higher areas. Negative feedback seems to be clustered lower, and I thought that I could do more by instead showing all the mean spikes across all sessions and creating two separate boxplots for positive and negative feedback. This will become the benchmark method that will be utilized in the Data Integration section, and the respective boxplot will be displayed there.
+
+Something that I want to note is another set of variables in this data set, which is `contrast_left` and `contrast_right`. I want to first plot them before stating a problem that associates with it.
+
+```{r}
+StimDiff = c()
+temp = c()
+for (i in 1:18)
+{
+  for (j in 1:length(session[[i]]$contrast_right))
+  {
+    out = session[[i]]$contrast_right[j]-session[[i]]$contrast_left[j]
+    StimDiff = append(StimDiff, out)
+  }
+  temp = append(temp, session[[i]]$feedback_type)
+}
+
+StimDiff = cbind(StimDiff, temp) %>% as.data.frame()
+colnames(StimDiff) = c("Stim_Diff", "Feedback")
+
+```
+
+```{r}
+ggplot(StimDiff, aes(Stim_Diff, color = as.factor(Feedback))) + geom_bar(fill = "white") + 
+  stat_count(aes(label = after_stat(count)), geom = "text", show.legend = FALSE, vjust = -0.2) + 
+  labs(x = "Contrast Differences (Negative = Left)", y = "Feedback Type Counts", title = "Comparison of Response Types on Contrasts", color = "Feedback")
+
+rm(StimDiff)
+```
+
+This bar plot shows both the left and the right contrasts combined together, where if the difference between the two is negative, that means it is more left sided in the stimulus. The bar has one major flaw though. Something to note is the 0. The bar plot fails to acknowledge the fact that 0 contrast difference can mean two things, either both contrast are 0 or both are the exact same non-zeros such that the difference in 0. The problem is that when both are 0, the new criteria is for the mouse to not turn the wheel and if both of the contrasts are the exact same, then it would go into a randomized 50% of success, therefore completely relying on chance instead. To address this, I will represent the 0 difference data as two different classifications.
+
+```{r}
+Zeros = c()
+temp = c()
+for (i in 1:18)
+{
+  for (j in 1:length(session[[i]]$contrast_right))
+  {
+    if (session[[i]]$contrast_left[j] == 0 && session[[i]]$contrast_right[j] == 0)
+    {
+      Zeros = append(Zeros, session[[i]]$feedback_type[j])
+      temp = append(temp, "Both_Zero")
+    }
+    
+    if (session[[i]]$contrast_left[j] != 0 && session[[i]]$contrast_left[j] - 
+             session[[i]]$contrast_right[j] == 0)
+    {
+      Zeros = append(Zeros, session[[i]]$feedback_type[j])
+      temp = append(temp, "Difference_Zero")
+    }
+  }
+}
+
+Zeros = cbind(Zeros, temp) %>% as.data.frame()
+colnames(Zeros) = c("Feedback", "Type")
+rm(temp)
+```
+
+```{r}
+ggplot(Zeros, aes(Type, color = as.factor(Feedback))) + geom_bar(fill = "white") + 
+  stat_count(aes(label = after_stat(count)), geom = "text", show.legend = FALSE, vjust = -0.2) + labs(title = "Zero Difference Contrasts Feedback Types", x = "Type of Zero Difference", y = 'Count of Feedbacks', color = "Feedback Type")
+
+rm(Zeros)
+```
+
+In comparison, there appears to be a nearly perfect 50/50 on success and failure when the difference in contrasts are 0, considering randomness is entirely relied on when both contrasts are equal. This can explain the reason why some sessions had a lower success rate as a result. However, if I were to compare the bar where both are 0, then I would notice that contrasts that do not have a difference of 0 and instead 1/-1 will have a higher percentage of successes, perhaps suggesting that this can be applicable to a series prediction models. I believe, that splitting the data will help address this issue, but will require more work for generating the prediction models.
+
+# Data Integration
+
+Now that the issues are addressed, I will now explain what I want to do for integration. First, I want to take all of the spikes across all trials of all sessions, and apply the benchmark approach via finding the means in all of them. Next, I want to take the difference between the two contrast and split the entire data set into 3 different types. One for when the difference in contrast is non-zero, one for when both contrasts are zero, and one for when both contrasts are non-zero, but have no differences.
+
+```{r}
+SPKSMEANS = c()
+temp_response = c()
+temp_left = c()
+temp_right = c()
+for (i in 1:18)
+{
+  index = length(session[[i]]$spks)
+  tot = nrow(session[[i]]$spks[[1]])
+  for (j in 1:index)
+  {
+    out = sum(session[[i]]$spks[[j]]) / tot
+    SPKSMEANS = append(SPKSMEANS , out)
+  }
+  temp_response = append(temp_response, session[[i]]$feedback_type)
+  temp_left = append(temp_left, session[[i]]$contrast_left)
+  temp_right = append(temp_right, session[[i]]$contrast_right)
+}
+
+SPKSMEANS = cbind(SPKSMEANS, temp_response) %>% cbind(temp_left) %>% cbind(temp_right) %>% as.data.frame()
+
+colnames(SPKSMEANS) = c("Mean_Spikes", "Feedback", "Contrast_Left", "Contrast_Right")
+
+```
+
+```{r}
+ggplot(SPKSMEANS, aes(x = Mean_Spikes, y = as.factor(Feedback), color = as.factor(Feedback))) + 
+  geom_boxplot(alpha = 0.05) + 
+  guides(color = guide_legend(override.aes = list(alpha = 1))) + 
+  labs(color = "Feedback", y = 'Feedback', title = 'Boxplot of SPKS mean in Feedback Types', x = 'Mean Spikes')
+
+```
+
+This will be the data that is going to be used in the prediction model.
+
+Below is the data set when I take the means of all of the spikes, but I have not split the data set yet into their respective types, but will show each of the splitted data sets in the tables below.
+
+```{r}
+head(SPKSMEANS) %>% kable()
+```
+
+```{r}
+Difference_Type = as.factor(c())
+
+for (i in 1:nrow(SPKSMEANS))
+{
+  if (SPKSMEANS$Contrast_Right[i] - SPKSMEANS$Contrast_Left[i] == 0 && SPKSMEANS$Contrast_Left[i] == 0)
+  {
+    Difference_Type = append(Difference_Type, 'Diff_0_Both_Zero')
+  }
+  if (SPKSMEANS$Contrast_Right[i] != 0 && SPKSMEANS$Contrast_Right[i] - SPKSMEANS$Contrast_Left[i] == 0)
+  {
+    Difference_Type = append(Difference_Type, 'Diff_0_Both_NonZero')
+  }
+  if (SPKSMEANS$Contrast_Right[i] - SPKSMEANS$Contrast_Left[i] != 0)
+  {
+    Difference_Type = append(Difference_Type, 'Diff_Not_0')
+  }
+}
+
+SPKSMEANS = cbind(SPKSMEANS, Difference_Type)
+```
+
+```{r}
+Both_Zero = filter(SPKSMEANS, Difference_Type == 'Diff_0_Both_Zero')
+Both_Zero$Feedback = as.factor(Both_Zero$Feedback)
+
+
+Both_Non_Zero = filter(SPKSMEANS, Difference_Type == 'Diff_0_Both_NonZero')
+Both_Non_Zero$Feedback = as.factor(Both_Non_Zero$Feedback)
+
+Non_Zero_Diff = filter(SPKSMEANS, Difference_Type == 'Diff_Not_0')
+Non_Zero_Diff$Feedback = as.factor(Non_Zero_Diff$Feedback)
+```
+
+The first 6 rows of each categories will be displayed below.
+
+### Both Contrasts Are 0:
+
+```{r}
+head(Both_Zero) %>% kable(align = 'c')
+```
+
+### Difference is 0, Both are Non-zero:
+
+##### Note: Because the contrasts result in the feedback being entirely reliant on chance, I will expect the model under this criteria to be the poorest in performance.
+
+```{r}
+head(Both_Non_Zero) %>% kable(align = 'c')
+```
+
+### Difference is not 0:
+
+```{r}
+head(Non_Zero_Diff) %>% kable(align = 'c')
+```
+
+These 3 sets will be applied into their respective predictive models. There will be a total of 3 different models and the test data set will also be going through the same process so it will fit into the models.
+
+# Predictive Modeling
+
+When creating the prediction model, I ran into an issue where the criteria for the probability of success may not be good enough for a proper performance of the model. Some testing showed that the model would predict every result as a success when the criteria is 0.50. Therefore, I will take the extra step and individually choose different criteria for each model. As suggested by Professor Chen, I will split the data sets into two parts, training and validation in order to find a number that would bring out the best performance in the model. I chose to randomly set aside 100 observations in each data set as the validation set, and then leaving the rest as the training set. After the values are chosen is when I will create the logistic regression models for all 3 conditions.
+
+### Both Contrasts Are 0,
+
+The following misclassifcation rates from my manually chosen candidate numbers are as follows.
+
+```{r}
+# Sampling from session data set as a validation set.
+
+
+set.seed(3)
+
+index = sample(c(1:1371), 100, replace = FALSE)
+
+training_set = data.frame(Both_Zero[-index, ])
+validation_set = data.frame(Both_Zero[index, ])
+
+train_model = glm(Feedback ~ Mean_Spikes, data = training_set, family = 'binomial')
+prediction = predict(train_model, type = 'response', newdata = validation_set)
+
+candidates = c(.5, .55, .6, .65)
+
+Y_Pred = c()
+
+Misclassification = c()
+for (i in 1:length(candidates))
+{
+  Y_Pred = ifelse(prediction > candidates[i], 1, -1)
+  temp = table(Actual = validation_set$Feedback, Y_Pred)
+  Misclassification = append(Misclassification, ((temp[1,2] + temp[2,1]) / sum(temp)))
+}
+
+candidates = rbind(candidates, Misclassification)
+
+colnames(candidates) = c(1:4)
+rownames(candidates) = c('Candidates', 'Misclassification')
+kable(candidates, align = 'l')
+
+Model_1_C = 0.5 # It had to be manually assigned as I did not have time to make a code for finding the smallest value
+```
+
+The smallest number in the above table is `0.37`, which corresponds to the criteria for prediction probability to be around `0.50`, the default criteria. Therefore, I will use this number for this model.
+
+### Difference is 0, Both are Non-zero:
+
+For this condition, I decided to keep it as the default 0.5 because as seen in my earlier bar plot, there is a nearly perfect 50/50 split of positive and negative feedback. Additionally, it is worth noting that everything relies on a 50% chance of success if this condition is met. Therefore, I believe this justifies my reason to not adjust this specific criterion for prediction.
+
+### Non-zero Difference
+
+```{r}
+set.seed(3)
+
+#The large value represents the amount of observations under a certain condition
+index = sample(c(1:3395), 100) 
+
+training_set = data.frame(Non_Zero_Diff[-index, ])
+validation_set = data.frame(Non_Zero_Diff[index, ])
+
+train_model = glm(Feedback ~ Mean_Spikes, data = training_set, family = 'binomial')
+prediction = predict(train_model, type = 'response', newdata = validation_set)
+
+candidates = c(.58, 0.6, 0.65, 0.70)
+
+Y_Pred = c()
+
+Misclassification = c()
+for (i in 1:length(candidates))
+{
+  Y_Pred = ifelse(prediction > candidates[i], 1, -1)
+  temp = table(Actual = validation_set$Feedback, Predicted = Y_Pred)
+  Misclassification = append(Misclassification, ((temp[1,2] + temp[2,1]) / sum(temp)))
+}
+
+candidates = rbind(candidates, Misclassification)
+
+colnames(candidates) = c(1:ncol(candidates))
+rownames(candidates) = c('Candidates', 'Misclassification')
+kable(candidates, align = 'l')
+
+Model_3_C = 0.58
+# It had to be manually assigned as I did not have time to make a code for finding the smallest value
+```
+
+The smallest misclassification rate is `0.20` that corresponds to the criteria being at `0.58`. Therefore, I will use this when predicting for this particular model.
+
+Now that all three values have been figured out, they will be used in the next section. But first, I will construct all three models with all of the data.
+
+### Model With Both Contrasts of 0:
+
+```{r}
+Both_Zero_Model = glm(Feedback ~ Mean_Spikes, data = Both_Zero, family = 'binomial')
+
+kable(Both_Zero_Model$coefficients, align = 'l')
+
+```
+
+### Model With Difference of 0, Both are Non-zero:
+
+```{r}
+Both_Non_Zero_Model = glm(Feedback ~ Mean_Spikes, data = Both_Non_Zero, family = 'binomial')
+
+kable(Both_Non_Zero_Model$coefficients, align = 'l')
+```
+
+### Model With Non-zero Difference:
+
+```{r}
+Non_Zero_Diff_Model = glm(Feedback ~ Mean_Spikes, data = Non_Zero_Diff, family = 'binomial')
+
+kable(Non_Zero_Diff_Model$coefficients, align = 'l')
+```
+
+# Prediction Performance on Test Sets
+
+All prediction performance tests will utilize the f1 score to evaluate. In the event my model ends up predicting everything as negative, I will instead utilize an accuracy value. This will be mentioned in the tables if it happens. If the prediction ends up being all positive, I will readjust the internal code to work around the possibility of a subscript error, but the formula remains the same, therefore it will not require any mentioning.
+
+## Session 1 Testing:
+
+```{r}
+#SETUP FOR TEST SET
+test_means_1 = c()
+
+temp_response = c()
+temp_left = c()
+temp_right = c()
+
+index = length(test_set_1$spks)
+tot = nrow(test_set_1$spks[[1]])
+{
+  for (j in 1:index)
+  {
+    out = sum(test_set_1$spks[[j]]) / tot
+    test_means_1 = append(test_means_1 , out)
+  }
+}
+temp_response = append(temp_response, test_set_1$feedback_type)
+temp_left = append(temp_left, test_set_1$contrast_left)
+temp_right = append(temp_right, test_set_1$contrast_right)
+
+test_means_1 = cbind(test_means_1, temp_response) %>% cbind(temp_left) %>% cbind(temp_right) %>% as.data.frame()
+
+colnames(test_means_1) = c("Mean_Spikes", "Feedback", "Contrast_Left", "Contrast_Right")
+```
+
+```{r}
+Difference_Type = as.factor(c())
+
+for (i in 1:nrow(test_means_1))
+{
+  if (test_means_1$Contrast_Right[i] - test_means_1$Contrast_Left[i] == 0 && test_means_1$Contrast_Left[i] == 0)
+  {
+    Difference_Type = append(Difference_Type, 'Diff_0_Both_Zero')
+  }
+  if (test_means_1$Contrast_Right[i] != 0 && test_means_1$Contrast_Right[i] - test_means_1$Contrast_Left[i] == 0)
+  {
+    Difference_Type = append(Difference_Type, 'Diff_0_Both_NonZero')
+  }
+  if (test_means_1$Contrast_Right[i] - test_means_1$Contrast_Left[i] != 0)
+  {
+    Difference_Type = append(Difference_Type, 'Diff_Not_0')
+  }
+}
+
+test_means_1 = cbind(test_means_1, Difference_Type)
+```
+
+```{r}
+test_Both_Zero = filter(test_means_1, Difference_Type == 'Diff_0_Both_Zero')
+test_Both_Zero$Feedback = as.factor(test_Both_Zero$Feedback)
+
+test_Both_Non_Zero = filter(test_means_1, Difference_Type == 'Diff_0_Both_NonZero')
+test_Both_Non_Zero$Feedback = as.factor(test_Both_Non_Zero$Feedback)
+
+test_Non_Zero_Diff = filter(test_means_1, Difference_Type == 'Diff_Not_0')
+test_Non_Zero_Diff$Feedback = as.factor(test_Non_Zero_Diff$Feedback)
+```
+
+### Prediction Performance:
+
+```{r}
+F1_1 = data.frame(Both_Zero = 0, Both_Non_Zero = 0, Different_Contrasts = 0)
+colnames(F1_1) = c("Both Zero", "Both Equal Non-Zero", "Different Contrasts")
+
+
+predict_1 = predict(Both_Zero_Model, type = "response", newdata = test_Both_Zero)
+Y_Pred = ifelse(predict_1 > Model_1_C, 1, -1)
+
+temp = table(Actual = test_Both_Zero$Feedback, Predicted = Y_Pred)
+
+# Modified due to all predictions being positive, but still calculates the same thing
+
+Precision = (temp[2] / (temp[2] + temp[1]))
+
+Recall = (temp[2] / (temp[2] + 0))
+
+tempF1 = c(Both_Zero = (2 * Precision * Recall) / (Precision + Recall))
+F1_1[1] = tempF1
+
+```
+
+
+
+```{r}
+predict_2 = predict(Both_Non_Zero_Model, type = "response", newdata = test_Both_Non_Zero)
+Y_Pred = ifelse(predict_2 > .5, 1, -1)
+
+temp = table(Actual = test_Both_Non_Zero$Feedback, Predicted = Y_Pred)
+
+Precision = (temp[2,2] / (temp[2,2] + temp[1,2]))
+
+Recall = (temp[2,2] / (temp[2,2] + temp[2,1]))
+
+tempF1 = (2 * Precision * Recall) / (Precision + Recall)
+
+F1_1[2] = tempF1
+```
+
+```{r}
+predict_3 = predict(Non_Zero_Diff_Model, type = "response", newdata = test_Non_Zero_Diff)
+Y_Pred = ifelse(predict_3 > Model_3_C, 1, -1)
+
+temp = table(Actual = test_Non_Zero_Diff$Feedback, Predicted = Y_Pred)
+
+#Another occurrence where all predictions are positive.
+
+Precision = (temp[2] / (temp[2] + temp[1]))
+
+Recall = (temp[2] / (temp[2] + 0))
+
+tempF1 = (2 * Precision * Recall) / (Precision + Recall)
+F1_1[3] = tempF1
+```
+
+The resulting table of F1 scores are as follows:
+
+```{r}
+kable(F1_1)
+
+rm(test_means_1)
+rm(test_set_1)
+```
+
+Surprisingly, the model under the condition of both contrast being 0 had a large F1 score, as well as the model with different contrasts. The model with both equal non-zero contrasts had the performance that I expected because it was all dependent on chance in the real data.
+
+## Session 18 Testing:
+
+```{r}
+#SETUP FOR TEST SET
+test_means_18 = c()
+
+temp_response = c()
+temp_left = c()
+temp_right = c()
+
+index = length(test_set_18$spks)
+tot = nrow(test_set_18$spks[[1]])
+{
+  for (j in 1:index)
+  {
+    out = sum(test_set_18$spks[[j]]) / tot
+    test_means_18 = append(test_means_18 , out)
+  }
+}
+temp_response = append(temp_response, test_set_18$feedback_type)
+temp_left = append(temp_left, test_set_18$contrast_left)
+temp_right = append(temp_right, test_set_18$contrast_right)
+
+test_means_18 = cbind(test_means_18, temp_response) %>% cbind(temp_left) %>% cbind(temp_right) %>% as.data.frame()
+
+colnames(test_means_18) = c("Mean_Spikes", "Feedback", "Contrast_Left", "Contrast_Right")
+```
+
+
+```{r}
+Difference_Type = as.factor(c())
+
+for (i in 1:nrow(test_means_18))
+{
+  if (test_means_18$Contrast_Right[i] - test_means_18$Contrast_Left[i] == 0 && test_means_18$Contrast_Left[i] == 0)
+  {
+    Difference_Type = append(Difference_Type, 'Diff_0_Both_Zero')
+  }
+  if (test_means_18$Contrast_Right[i] != 0 && test_means_18$Contrast_Right[i] - test_means_18$Contrast_Left[i] == 0)
+  {
+    Difference_Type = append(Difference_Type, 'Diff_0_Both_NonZero')
+  }
+  if (test_means_18$Contrast_Right[i] - test_means_18$Contrast_Left[i] != 0)
+  {
+    Difference_Type = append(Difference_Type, 'Diff_Not_0')
+  }
+}
+
+test_means_18 = cbind(test_means_18, Difference_Type)
+```
+
+```{r}
+test_Both_Zero = filter(test_means_18, Difference_Type == 'Diff_0_Both_Zero')
+test_Both_Zero$Feedback = as.factor(test_Both_Zero$Feedback)
+
+
+test_Both_Non_Zero = filter(test_means_18, Difference_Type == 'Diff_0_Both_NonZero')
+test_Both_Non_Zero$Feedback = as.factor(test_Both_Non_Zero$Feedback)
+
+test_Non_Zero_Diff = filter(test_means_18, Difference_Type == 'Diff_Not_0')
+test_Non_Zero_Diff$Feedback = as.factor(test_Non_Zero_Diff$Feedback)
+```
+
+### Prediction Performance:
+
+```{r}
+F1_18 = data.frame(Both_Zero = 0, Both_Non_Zero = 0, Different_Contrasts = 0)
+colnames(F1_18) = c("Both Zero", "Both Equal Non-Zero", "Different Contrasts")
+
+
+predict_1 = predict(Both_Zero_Model, type = "response", newdata = test_Both_Zero)
+Y_Pred = ifelse(predict_1 > Model_1_C, 1, -1)
+
+temp = table(Actual = test_Both_Zero$Feedback, Predicted = Y_Pred)
+
+Precision = (temp[2] / (temp[2] + temp[1]))
+
+Recall = (temp[2] / (temp[2] + 0))
+
+tempF1 = c(Both_Zero = (2 * Precision * Recall) / (Precision + Recall))
+F1_18[1] = tempF1
+
+```
+
+
+```{r}
+#Occurence of all values being predicted as negative
+
+predict_2 = predict(Both_Non_Zero_Model, type = "response", newdata = test_Both_Non_Zero)
+Y_Pred = ifelse(predict_2 > .5, 1, -1)
+
+temp = table(Actual = test_Both_Non_Zero$Feedback, Predicted = Y_Pred)
+
+# formula for accuracy is TP+TN/TP+FP+FN+TN
+
+tempF1 = (0 + 1) / (0 + 0 + 2 + 1)
+
+F1_18[2] = tempF1
+```
+
+
+```{r}
+predict_3 = predict(Non_Zero_Diff_Model, type = "response", newdata = test_Non_Zero_Diff)
+Y_Pred = ifelse(predict_3 > Model_3_C, 1, -1)
+
+temp = table(Actual = test_Non_Zero_Diff$Feedback, Predicted = Y_Pred)
+
+Precision = (temp[2] / (temp[2] + temp[1]))
+
+Recall = (temp[2] / (temp[2] + 0))
+
+tempF1 = (2 * Precision * Recall) / (Precision + Recall)
+F1_18[3] = tempF1
+```
+
+The resulting F1 scores for session 18 are as follows:
+
+```{r}
+kable(F1_18)
+```
+
+NOTE: The second condition where both contrasts are non-zero but have no difference ended up having predictions all being negative. The middle value is NOT the F1 score, but is actually the accuracy value.
+
+There is poorer performance here for session 18, where the F1 score dropped heavily for the first model, but did improve in the third model. However, this is not enough to compensate. The second model also had poorer performance, which was to be expected considering the true data only had 3 observations for that condition. Therefore, the accuracy value can vary a lot and would require more observations. Again this was to be expected.
+
+
+
+# Discussion
+
+Overall, I was surprised that my models for contrasts that are not equal non-zeros had good performances to begin with. However, part of this performance relied on chance again because I did make my criterion values for prediction based on randomly sampling from the training data set. I could have been unlucky and had a poorer performance if my random samples were bad. Another thing to note is that the models with both contrasts being zero, and contrasts having some differences had similar performances, so maybe I could have just combined both of those sets and created only 2 models instead. The second model utilized in session 18 had the issue of being unable to get an F1 score, so I had to resort to making it an accuracy value. This was understandable because there were only 3 values to begin with, which is way too small. If there were more observations under this condition, I would've been able to calculate it. Despite that problem, this answers my original question. It is possible to predict outcomes without the need to look at more complicated details like brain areas. Improvements can be made on this model, and future attempt can instead take into account my new thoughts because of these results.
+
+
+# Acknowledgements
+
+The link below assisted me in understanding how to use the `kable()` function:
+
+<https://bookdown.org/yihui/rmarkdown-cookbook/kable.html>
+
+Changing alpha of legend in ggplot:
+
+<https://stackoverflow.com/questions/5290003/how-to-set-legend-alpha-with-ggplot2>
+
+The link below helped me understand how to find the F1 score:
+
+<https://www.statology.org/f1-score-in-r/>
+
+Some of the code were used from my older projects for plotting.
+
+There was instance when one of my models ended up predicting all negatives, rendering me unable to calculate the F1 score, so these links assisted me.
+
+<https://stats.stackexchange.com/questions/550608/what-is-the-f1-score-for-my-prediction-when-all-values-are-negative>
+
+<https://stackoverflow.com/questions/47437893/how-to-calculate-logistic-regression-accuracy>
+
+ChatGPT assisted me in understanding a bit better on how to adjust the criterion in the `ifelse()` function. However, Professor Chen helped more in better understanding how to choose the criteria in my models, which influenced my decision to do a split sample method for choosing the criterion.
+
+Thank you to Professor Chen, TA Chen Qian and TA Wenzhuo Wu for assisting me in feedback and advice on doing my project. This was my most difficult work as of the time of submission and I hope that I was successful in creating a satisfactory project.
+
+# Appendix
+
+```{r ref.label=knitr::all_labels(), echo=TRUE, eval=FALSE}
+```
